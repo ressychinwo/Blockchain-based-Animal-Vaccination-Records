@@ -4,6 +4,8 @@
 (define-constant ERR_ALREADY_EXISTS (err u409))
 (define-constant ERR_INVALID_PARAMS (err u400))
 (define-constant ERR_EXPIRED (err u410))
+(define-constant ERR_MICROCHIP_REGISTERED (err u1001))
+(define-constant ERR_MICROCHIP_NOT_FOUND (err u1004))
 
 (define-map animals
     { animal-id: uint }
@@ -51,6 +53,11 @@
         vaccination-id: uint,
     }
     { exists: bool }
+)
+
+(define-map microchip-index
+    { chip: (string-ascii 20) }
+    { animal-id: uint }
 )
 
 (define-data-var next-animal-id uint u1)
@@ -105,6 +112,40 @@
     )
 )
 
+(define-read-only (get-animal-id-by-chip (chip (string-ascii 20)))
+    (match (map-get? microchip-index { chip: chip })
+        entry (some (get animal-id entry))
+        none
+    )
+)
+
+(define-read-only (microchip-is-available (chip (string-ascii 20)))
+    (is-none (map-get? microchip-index { chip: chip }))
+)
+
+(define-public (register-microchip
+        (chip (string-ascii 20))
+        (animal-id uint)
+    )
+    (if (is-some (map-get? microchip-index { chip: chip }))
+        ERR_MICROCHIP_REGISTERED
+        (begin
+            (map-set microchip-index { chip: chip } { animal-id: animal-id })
+            (ok animal-id)
+        )
+    )
+)
+
+(define-public (unregister-microchip (chip (string-ascii 20)))
+    (match (map-get? microchip-index { chip: chip })
+        entry (begin
+            (map-delete microchip-index { chip: chip })
+            (ok (get animal-id entry))
+        )
+        ERR_MICROCHIP_NOT_FOUND
+    )
+)
+
 (define-public (register-veterinarian
         (name (string-ascii 100))
         (license-number (string-ascii 30))
@@ -150,6 +191,8 @@
         (asserts! (> (len name) u0) ERR_INVALID_PARAMS)
         (asserts! (> (len species) u0) ERR_INVALID_PARAMS)
         (asserts! (<= birth-date stacks-block-height) ERR_INVALID_PARAMS)
+        (asserts! (> (len microchip-id) u0) ERR_INVALID_PARAMS)
+        (asserts! (microchip-is-available microchip-id) ERR_MICROCHIP_REGISTERED)
         (map-set animals { animal-id: animal-id } {
             owner: tx-sender,
             name: name,
@@ -160,6 +203,7 @@
             registered-at: stacks-block-height,
             is-active: true,
         })
+        (try! (register-microchip microchip-id animal-id))
         (var-set next-animal-id (+ animal-id u1))
         (ok animal-id)
     )

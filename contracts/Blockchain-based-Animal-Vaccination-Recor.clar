@@ -60,8 +60,28 @@
     { animal-id: uint }
 )
 
+(define-map vaccination-reminders
+    { reminder-id: uint }
+    {
+        animal-id: uint,
+        vaccine-name: (string-ascii 50),
+        due-date: uint,
+        is-completed: bool,
+        created-at: uint,
+    }
+)
+
+(define-map animal-reminder-index
+    {
+        animal-id: uint,
+        reminder-id: uint,
+    }
+    { exists: bool }
+)
+
 (define-data-var next-animal-id uint u1)
 (define-data-var next-vaccination-id uint u1)
+(define-data-var next-reminder-id uint u1)
 
 (define-read-only (get-animal (animal-id uint))
     (map-get? animals { animal-id: animal-id })
@@ -121,6 +141,33 @@
 
 (define-read-only (microchip-is-available (chip (string-ascii 20)))
     (is-none (map-get? microchip-index { chip: chip }))
+)
+
+(define-read-only (get-reminder (reminder-id uint))
+    (map-get? vaccination-reminders { reminder-id: reminder-id })
+)
+
+(define-read-only (is-reminder-overdue (reminder-id uint))
+    (match (map-get? vaccination-reminders { reminder-id: reminder-id })
+        reminder-data (and
+            (< (get due-date reminder-data) stacks-block-height)
+            (not (get is-completed reminder-data))
+        )
+        false
+    )
+)
+
+(define-read-only (get-animal-reminder-status
+        (animal-id uint)
+        (reminder-id uint)
+    )
+    (default-to false
+        (get exists
+            (map-get? animal-reminder-index {
+                animal-id: animal-id,
+                reminder-id: reminder-id,
+            })
+        ))
 )
 
 (define-public (register-microchip
@@ -310,5 +357,84 @@
             (merge animal-data { is-active: false })
         )
         (ok true)
+    )
+)
+
+(define-public (create-vaccination-reminder
+        (animal-id uint)
+        (vaccine-name (string-ascii 50))
+        (due-date uint)
+    )
+    (let (
+            (animal-data (unwrap! (map-get? animals { animal-id: animal-id }) ERR_NOT_FOUND))
+            (reminder-id (var-get next-reminder-id))
+        )
+        (asserts!
+            (or
+                (is-eq tx-sender (get owner animal-data))
+                (is-some (map-get? veterinarians { vet-id: tx-sender }))
+            )
+            ERR_UNAUTHORIZED
+        )
+        (asserts! (get is-active animal-data) ERR_NOT_FOUND)
+        (asserts! (> (len vaccine-name) u0) ERR_INVALID_PARAMS)
+        (asserts! (> due-date stacks-block-height) ERR_INVALID_PARAMS)
+        (map-set vaccination-reminders { reminder-id: reminder-id } {
+            animal-id: animal-id,
+            vaccine-name: vaccine-name,
+            due-date: due-date,
+            is-completed: false,
+            created-at: stacks-block-height,
+        })
+        (map-set animal-reminder-index {
+            animal-id: animal-id,
+            reminder-id: reminder-id,
+        } { exists: true }
+        )
+        (var-set next-reminder-id (+ reminder-id u1))
+        (ok reminder-id)
+    )
+)
+
+(define-public (complete-vaccination-reminder (reminder-id uint))
+    (let ((reminder-data (unwrap! (map-get? vaccination-reminders { reminder-id: reminder-id })
+            ERR_NOT_FOUND
+        )))
+        (let ((animal-data (unwrap!
+                (map-get? animals { animal-id: (get animal-id reminder-data) })
+                ERR_NOT_FOUND
+            )))
+            (asserts!
+                (or
+                    (is-eq tx-sender (get owner animal-data))
+                    (is-some (map-get? veterinarians { vet-id: tx-sender }))
+                )
+                ERR_UNAUTHORIZED
+            )
+            (asserts! (not (get is-completed reminder-data)) ERR_INVALID_PARAMS)
+            (map-set vaccination-reminders { reminder-id: reminder-id }
+                (merge reminder-data { is-completed: true })
+            )
+            (ok true)
+        )
+    )
+)
+
+(define-public (cancel-vaccination-reminder (reminder-id uint))
+    (let ((reminder-data (unwrap! (map-get? vaccination-reminders { reminder-id: reminder-id })
+            ERR_NOT_FOUND
+        )))
+        (let ((animal-data (unwrap!
+                (map-get? animals { animal-id: (get animal-id reminder-data) })
+                ERR_NOT_FOUND
+            )))
+            (asserts! (is-eq tx-sender (get owner animal-data)) ERR_UNAUTHORIZED)
+            (map-delete vaccination-reminders { reminder-id: reminder-id })
+            (map-delete animal-reminder-index {
+                animal-id: (get animal-id reminder-data),
+                reminder-id: reminder-id,
+            })
+            (ok true)
+        )
     )
 )
